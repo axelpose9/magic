@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Mini Juego de Hechizos — Tipos, Estados y Atributos</title>
+<style>
+	body { background:#111; color:#fff; font-family:Arial,sans-serif; padding:20px; }
+	textarea { width:100%; height:120px; background:#222; color:#fff; border:none; padding:10px; border-radius:6px; }
+	button { padding:10px 20px; margin-top:10px; cursor:pointer; background:#f39c12; color:#000; border:none; font-weight:bold; border-radius:6px; margin-right:5px; }
+	#log { margin-top:20px; white-space: pre-wrap; font-family:monospace; max-height:360px; overflow-y:auto; background:#0e0e0e; padding:12px; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); }
+	#tablero { display:flex; gap:20px; margin-top:20px; }
+	#tablero div { background:#222; padding:10px; border-radius:5px; flex:1; }
+	span.positivo { color:#2ecc71; }
+	span.negativo { color:#e74c3c; }
+	span.info { color:#3498db; }
+	.hechizoTitulo { display:block; background:linear-gradient(90deg,#ff8a00,#ff3d3d); color:#111; padding:6px 10px; border-radius:6px; font-weight:bold; margin:6px 0; text-align:left; }
+	.separator { color:#888; margin:6px 0; display:block; text-align:center; }
+	.meta { color:#c6c6c6; font-size:12px; display:block; margin-top:4px; }
+	#controls { display:flex; gap:10px; align-items:center; margin-top:8px; }
+	.logLine { margin:4px 0; }
+</style>
+</head>
+<body>
+
+<h1>Mini Juego de Hechizos — Tipos, Estados y Atributos</h1>
+
+<textarea id="hechizo" placeholder="Ejemplo:
+Macro BolaDeFuego
+	Damage target=Enemigos power=30 tipo=Fuego
+EndMacro
+
+UseMacro name=BolaDeFuego
+"></textarea>
+
+<div id="controls">
+	<button onclick="lanzarTurno()">Lanzar Turno Normal</button>
+	<button onclick="lanzarRunas()">Lanzar Hechizo en Runas</button>
+	<button onclick="limpiarLog()">Limpiar Consola</button>
+</div>
+
+<div id="tablero">
+	<div id="aliados">
+		<h3>Aliados</h3>
+		<p id="vidaAliados">Vida: 100 / 100</p>
+		<p id="manaAliados">Mana: 100 / 100</p>
+		<p id="escudoAliados">Escudo: 0</p>
+		<p id="buffAliados">Buff: 0</p>
+		<p id="estadoAliados">Estado: Normal</p>
+		<small id="atributosAliados"></small>
+	</div>
+	<div id="enemigos">
+		<h3>Enemigos</h3>
+		<p id="vidaEnemigos">Vida: 120 / 120</p>
+		<p id="manaEnemigos">Mana: 80 / 80</p>
+		<p id="escudoEnemigos">Escudo: 0</p>
+		<p id="buffEnemigos">Buff: 0</p>
+		<p id="estadoEnemigos">Estado: Normal</p>
+		<small id="atributosEnemigos"></small>
+	</div>
+</div>
+
+<div id="log"></div>
+
+<script>
+	// Datos básicos
+	let jugadores = {
+		Aliados: {
+			vida: 100, maxVida: 100,
+			mana: 100, maxMana: 100,
+			escudo: 0, buff: 0,
+			escudoTurnos: 0, buffTurnos: 0,
+			estado: "Normal", estadoTurnos: 0,
+			fuerza: 10, inteligencia: 15, velocidad: 12, resistencia: 8,
+			afinidad: "Fuego"
+		},
+		Enemigos: {
+			vida: 120, maxVida: 120,
+			mana: 80, maxMana: 80,
+			escudo: 0, buff: 0,
+			escudoTurnos: 0, buffTurnos: 0,
+			estado: "Normal", estadoTurnos: 0,
+			fuerza: 12, inteligencia: 8, velocidad: 10, resistencia: 10,
+			afinidad: "Ninguna"
+		}
+	};
+
+	const efectosEstados = {
+		Normal:       {manaMod: 0, dmgMod:0, fallo:0},
+		Cansado:      {manaMod:0.1, dmgMod:-0.05, fallo:0.05},
+		Herido:       {manaMod:0, dmgMod:-0.1, fallo:0.1},
+		Inspirado:    {manaMod:-0.05, dmgMod:0.1, fallo:-0.1},
+		Sobrecargado: {manaMod:0.2, dmgMod:-0.2, fallo:0.15},
+		AfinidadFuego:{manaMod:-0.1, dmgMod:0.2, fallo:-0.05},
+		Intoxicado:   {manaMod:0.15, dmgMod:-0.1, fallo:0.2}
+	};
+
+	const tiposHechizo = {
+		Luz: { allowed: ["Heal","Buff","Shield","Estado"], dmgMod: -0.05, note: "Curación, protección" },
+		Oscuro: { allowed: ["Damage","Stun","Debuff","Estado","Drain"], dmgMod: 0.12, note: "Daño y control" },
+		Fuego: { allowed: ["Damage","Burn","Estado"], dmgMod: 0.18, note: "Daño sobre tiempo" },
+		Agua: { allowed: ["Heal","Buff","Slow","Estado"], dmgMod: 0, note: "Curación y control de velocidad" },
+		Aire: { allowed: ["Evasion","Buff","Damage","Estado"], dmgMod: 0.05, note: "Movilidad, evasión" },
+		Tierra: { allowed: ["Shield","Buff","Damage","Estado"], dmgMod: -0.02, note: "Defensa y golpes fuertes" },
+		Mente: { allowed: ["Confuse","Fear","Charm","Estado"], dmgMod: 0, note: "Control mental" },
+		Arcano: { allowed: ["Damage","Buff","Random","Estado"], dmgMod: 0.1, note: "Efectos mixtos" },
+		Sombra: { allowed: ["Steal","Damage","Estado","Drain"], dmgMod: 0.08, note: "Robo y sigilo" }
+	};
+
+	let macros = {};
+	const printedTitles = new Set();
+
+	// utilidades consola
+	function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m]); }
+
+	function printHechizoTitle(name){
+		if(!name || printedTitles.has(name)) return;
+		const logDiv = document.getElementById("log");
+		const html = `<div class="hechizoTitulo">✨ ${escapeHtml(name)} ✨</div>`;
+		logDiv.innerHTML += html + "\n";
+		logDiv.scrollTop = logDiv.scrollHeight;
+		printedTitles.add(name);
+	}
+
+	function log(mensaje, tipo="info", hechizo=null){
+		const logDiv = document.getElementById("log");
+		const cls = tipo==="positivo" ? "positivo" : tipo==="negativo" ? "negativo" : "info";
+		let emoji = "ℹ️"; if(tipo==="positivo") emoji="✅"; if(tipo==="negativo") emoji="⚠️"; if(tipo==="info") emoji="✨";
+		const indent = hechizo ? '&nbsp;&nbsp;&nbsp;&nbsp;' : '';
+		const html = `<div class="logLine ${cls}">${indent}${emoji} ${escapeHtml(mensaje)}</div>`;
+		logDiv.innerHTML += html + "\n";
+		logDiv.scrollTop = logDiv.scrollHeight;
+		console.log("LOG:", mensaje);
+	}
+
+	function limpiarLog(){ document.getElementById("log").innerHTML = ""; printedTitles.clear(); }
+
+	// vista
+	function actualizarTablero(){
+		document.getElementById("vidaAliados").textContent = `Vida: ${Math.max(0, Math.round(jugadores.Aliados.vida))} / ${jugadores.Aliados.maxVida}`;
+		document.getElementById("manaAliados").textContent = `Mana: ${Math.max(0, Math.round(jugadores.Aliados.mana))} / ${jugadores.Aliados.maxMana}`;
+		document.getElementById("escudoAliados").textContent = `Escudo: ${Math.round(jugadores.Aliados.escudo)} (${jugadores.Aliados.escudoTurnos} turnos)`;
+		document.getElementById("buffAliados").textContent = `Buff: ${Math.round(jugadores.Aliados.buff)} (${jugadores.Aliados.buffTurnos} turnos)`;
+		document.getElementById("estadoAliados").textContent = `Estado: ${jugadores.Aliados.estado}${jugadores.Aliados.estadoTurnos?(" ("+jugadores.Aliados.estadoTurnos+"t)"):''}`;
+		document.getElementById("atributosAliados").textContent = `Fuerza:${jugadores.Aliados.fuerza} Int:${jugadores.Aliados.inteligencia} Vel:${jugadores.Aliados.velocidad} Res:${jugadores.Aliados.resistencia} Afinidad:${jugadores.Aliados.afinidad}`;
+
+		document.getElementById("vidaEnemigos").textContent = `Vida: ${Math.max(0, Math.round(jugadores.Enemigos.vida))} / ${jugadores.Enemigos.maxVida}`;
+		document.getElementById("manaEnemigos").textContent = `Mana: ${Math.max(0, Math.round(jugadores.Enemigos.mana))} / ${jugadores.Enemigos.maxMana}`;
+		document.getElementById("escudoEnemigos").textContent = `Escudo: ${Math.round(jugadores.Enemigos.escudo)} (${jugadores.Enemigos.escudoTurnos} turnos)`;
+		document.getElementById("buffEnemigos").textContent = `Buff: ${Math.round(jugadores.Enemigos.buff)} (${jugadores.Enemigos.buffTurnos} turnos)`;
+		document.getElementById("estadoEnemigos").textContent = `Estado: ${jugadores.Enemigos.estado}${jugadores.Enemigos.estadoTurnos?(" ("+jugadores.Enemigos.estadoTurnos+"t)"):''}`;
+		document.getElementById("atributosEnemigos").textContent = `Fuerza:${jugadores.Enemigos.fuerza} Int:${jugadores.Enemigos.inteligencia} Vel:${jugadores.Enemigos.velocidad} Res:${jugadores.Enemigos.resistencia} Afinidad:${jugadores.Enemigos.afinidad}`;
+	}
+
+	function obtenerObjetivos(targetName){
+		if(!targetName) return [];
+		switch(targetName){
+			case "Aliados": return [jugadores.Aliados];
+			case "Enemigos": return [jugadores.Enemigos];
+			case "Grupo": return [jugadores.Aliados, jugadores.Enemigos];
+			case "Area": return [jugadores.Enemigos];
+			default:
+				if(targetName.includes(",")){
+					return targetName.split(",").map(n => jugadores[n.trim()]).filter(x=>x);
+				}
+				return jugadores[targetName] ? [jugadores[targetName]] : [];
+		}
+	}
+
+	function calcularCostoManaPorLinea(args, caster){
+		let baseCost = 1;
+		if(args.mana) baseCost = args.mana;
+		else {
+			const power = args.power||0;
+			baseCost = Math.max(1, Math.ceil(power / 10));
+		}
+		const casterEstado = efectosEstados[caster.estado] || efectosEstados.Normal;
+		let finalCost = Math.max(0, Math.ceil(baseCost * (1 + casterEstado.manaMod)));
+		// console.log para debug
+		console.log("LOG: coste mana calculado:", baseCost, "-> final:", finalCost, "estadoCaster:", caster.estado);
+		return finalCost;
+	}
+
+	function accionPermitidaPorTipo(accion, tipo){
+		if(!tipo) return true;
+		const t = tiposHechizo[tipo];
+		if(!t) return false;
+		return t.allowed.includes(accion);
+	}
+	function aplicarModificadorTipoValor(valor, tipo){
+		if(!tipo) return valor;
+		const t = tiposHechizo[tipo];
+		if(!t) return valor;
+		return Math.round(valor * (1 + (t.dmgMod||0)));
+	}
+
+	// Lanzador de líneas (devuelve resumen {daño, curacion} cuando es llamada dentro de macro)
+	function lanzarLinea(linea, hechizo=null, opciones={}){
+		// no procesar líneas vacías o comentarios
+		if(!linea) return null;
+		linea = linea.replace(/^\s+|\s+$/g, "");
+		if(!linea || linea.startsWith("#")) return null;
+
+		const partes = linea.split(/\s+/);
+		const accion = partes[0];
+		const args = {};
+		partes.slice(1).forEach(p=>{
+			if(p.includes("=")){
+				const [k,v] = p.split("=");
+				const num = Number(v);
+				args[k] = isNaN(num) ? v : num;
+			}
+		});
+
+		const tipo = args.tipo || args.type || null;
+		const caster = jugadores.Aliados;
+		const isMacroCall = accion === "UseMacro";
+		const inSubMacro = !!opciones.esMacro; // si venimos desde una macro superior
+		const showLogs = !inSubMacro; // solo mostramos logs si no venimos de sub-macro
+
+		// Manejo de UseMacro (anidamiento)
+		if(isMacroCall){
+			if(args.name && macros[args.name]){
+				// Mostrar título solo si es macro principal (no subllamadas)
+				if(!inSubMacro) printHechizoTitle(args.name);
+
+				// calcular nivel acumulado y reducciones (5% por nivel)
+				const nivel = (opciones.nivel || 0) + 1; // cada UseMacro aumenta nivel
+				const manaReduction = (opciones.manaReduction || 0) + 0.05; // +5% por nivel extra
+				const damageReduction = (opciones.damageReduction || 0) + 0.05;
+
+				if(showLogs) log(`✨ Ejecutando macro ${args.name}`, "info");
+
+				// ejecutar cada línea de la macro (acumulando resúmenes)
+				let resumen = {daño:0, curacion:0};
+				for(const l of macros[args.name]){
+					const r = lanzarLinea(l, args.name, {esMacro:true, nivel, manaReduction, damageReduction});
+					if(r){
+						resumen.daño += r.daño || 0;
+						resumen.curacion += r.curacion || 0;
+					}
+				}
+
+				// Si es macro principal, mostrar resumen final (solo aquí)
+				if(!inSubMacro){
+					if(resumen.daño > 0) log(`⚠️ Enemigos reciben ${resumen.daño} de daño.`, "negativo");
+					if(resumen.curacion > 0) log(`✅ Aliados recupera ${resumen.curacion} de vida.`, "positivo");
+				}
+
+				return resumen;
+			} else {
+				if(showLogs) log(`Macro ${args.name} no encontrada.`, "negativo");
+				return null;
+			}
+		}
+
+		// validar tipo de acción si aplica
+		if(tipo && !accionPermitidaPorTipo(accion, tipo) && !args.force){
+			if(showLogs) log(`Acción ${accion} no permitida para tipo ${tipo}. Usa force=true para forzar.`, "negativo");
+			return null;
+		}
+
+		const objetivos = args.target ? obtenerObjetivos(args.target) : [];
+		let manaCost = calcularCostoManaPorLinea(args, caster);
+
+		// aplicar reducción de mana si venimos desde macro anidada
+		if(opciones?.manaReduction){
+			const original = manaCost;
+			manaCost = Math.max(0, Math.ceil(manaCost * (1 - opciones.manaReduction)));
+			// solo debug en consola, no en log si es submacro
+			console.log(`LOG: Reducción de mana aplicada ${original} -> ${manaCost}`);
+			if(showLogs) log(`✨ Coste de mana ${manaCost} aplicado (mana restante: ${Math.round(caster.mana - manaCost)}).`, "info");
+		} else {
+			if(showLogs) log(`✨ Coste de mana ${manaCost} aplicado (mana restante: ${Math.round(caster.mana - manaCost)}).`, "info");
+		}
+
+		if(caster.mana < manaCost){
+			if(showLogs) log(`No hay suficiente mana (${caster.mana}) para ${accion} (coste ${manaCost}).`, "negativo");
+			return null;
+		}
+		caster.mana -= manaCost;
+
+		// resultado acumulado para resumen
+		let resultado = {daño:0, curacion:0};
+
+		// ejecutar la acción efectivamente, sin mostrar las líneas internas si es submacro
+		for(const target of objetivos){
+			switch(accion){
+				case "Damage": {
+					const baseDmg = args.power || 0;
+					let daño = Math.round(baseDmg + caster.fuerza*0.5 + (caster.buff||0));
+					// aplicar reducción de daño por macros anidadas
+					if(opciones?.damageReduction) daño = Math.round(daño * (1 - opciones.damageReduction));
+					// aplicar afinidad
+					if(tipo && caster.afinidad === tipo && !opciones?.damageReduction /* afinidad aplica antes de reducción por macro */){
+						daño = Math.round(daño * 1.3);
+						if(showLogs) log(`✅ Afinidad detectada (${tipo}) → daño aumentado a ${daño}.`,"positivo");
+					}
+					daño = Math.max(0, daño - target.escudo);
+					target.vida -= daño;
+					resultado.daño += daño;
+					if(showLogs) log(`${target === jugadores.Aliados ? "Aliados" : "Enemigos"} recibe ${daño} de daño.`, "negativo");
+					break;
+				}
+				case "Heal": {
+					const baseHeal = args.power || 0;
+					let curacion = Math.round(baseHeal + caster.inteligencia*0.5 + (caster.buff||0));
+					if(opciones?.damageReduction) curacion = Math.round(curacion * (1 - opciones.damageReduction));
+					if(tipo && caster.afinidad === tipo && !opciones?.damageReduction){
+						curacion = Math.round(curacion * 1.3);
+						if(showLogs) log(`✅ Afinidad detectada (${tipo}) → curación aumentada a ${curacion}.`,"positivo");
+					}
+					target.vida = Math.min(target.maxVida, target.vida + curacion);
+					resultado.curacion += curacion;
+					if(showLogs) log(`${target === jugadores.Aliados ? "Aliados" : "Enemigos"} se cura ${curacion}.`, "positivo");
+					break;
+				}
+				// aquí puedes agregar más acciones (Buff, Shield, Debuff, Drain...) con la misma lógica
+				default:
+					if(showLogs) log(`Acción desconocida: ${accion}`, "info");
+			}
+			// mantener vida dentro de límites
+			target.vida = Math.max(0, Math.min(target.vida, target.maxVida));
+		}
+
+		actualizarTablero();
+		return resultado;
+	}
+
+	// Procesar macros: soporta dos estilos:
+	// 1) Bloques con "Macro ... EndMacro"
+	// 2) Indentación por tabs (estilo python) — cada Macro con sus líneas indentadas
+	function procesarMacros(lineas){
+		macros = {}; // reiniciar
+		// detectar si hay tabs al inicio en el input -> preferiremos parser por tabs
+		const hasTabs = lineas.some(l => /^\t+Macro/.test(l));
+		if(hasTabs){
+			// parser por indentación (tabs)
+			const stack = [];
+			for(const raw of lineas){
+				const indentMatch = raw.match(/^\t*/);
+				const indent = indentMatch ? indentMatch[0].length : 0;
+				const trimmed = raw.trim();
+				if(!trimmed) continue;
+				if(trimmed.startsWith("Macro")){
+					const nombre = trimmed.split(/\s+/)[1];
+					// cerrar macros con indent mayor o igual
+					while(stack.length && indent <= stack[stack.length-1].indent) stack.pop();
+					stack.push({name:nombre, indent});
+					macros[nombre] = macros[nombre] || [];
+				} else if(trimmed.startsWith("EndMacro")){
+					// cerrar la macro más interna
+					if(stack.length) stack.pop();
+				} else {
+					if(stack.length){
+						// añadir la línea a la macro del tope
+						macros[stack[stack.length-1].name].push(trimmed);
+					}
+				}
+			}
+		} else {
+			// parser clásico Macro ... EndMacro
+			let macroActual = null;
+			for(const raw of lineas){
+				const trimmed = raw.trim();
+				if(!trimmed) continue;
+				if(trimmed.startsWith("Macro")){
+					const nombre = trimmed.split(/\s+/)[1];
+					macroActual = nombre;
+					macros[nombre] = macros[nombre] || [];
+				} else if(trimmed.startsWith("EndMacro")){
+					macroActual = null;
+				} else if(macroActual){
+					macros[macroActual].push(trimmed);
+				}
+			}
+		}
+		console.log("LOG: macros procesadas:", Object.keys(macros));
+	}
+
+	function procesarTurnos(){
+		Object.values(jugadores).forEach(j=>{
+			if(j.escudoTurnos > 0) j.escudoTurnos--; else j.escudo = 0;
+			if(j.buffTurnos > 0) j.buffTurnos--; else j.buff = 0;
+			if(j.estadoTurnos > 0){
+				j.estadoTurnos--;
+				if(j.estadoTurnos === 0){
+					j.estado = "Normal";
+					log(`${j === jugadores.Aliados ? "Aliados" : "Enemigos"} vuelve a estado Normal.`, "info");
+					console.log("LOG: estado expirado", j === jugadores.Aliados ? "Aliados" : "Enemigos");
+				}
+			}
+		});
+		jugadores.Aliados.mana = Math.min(jugadores.Aliados.maxMana, jugadores.Aliados.mana + 2);
+		jugadores.Enemigos.mana = Math.min(jugadores.Enemigos.maxMana, jugadores.Enemigos.mana + 1);
+	}
+
+	function mostrarEstado(){ actualizarTablero(); log("-----", "info"); }
+
+	// lanzarTurno: ejecuta líneas que no están dentro de definiciones Macro
+	function lanzarTurno() {
+		const input = document.getElementById("hechizo").value;
+		if(!input) return;
+		const lineas = input.split("\n");
+		procesarMacros(lineas);
+		log("Jugador recita hechizo...", "info");
+
+		let dentroMacro = false;
+		for(const l of lineas){
+			const trimmed = l.trim();
+			if(!trimmed) continue;
+			if(trimmed.startsWith("Macro")) { dentroMacro = true; continue; }
+			if(trimmed.startsWith("EndMacro")) { dentroMacro = false; continue; }
+			if(dentroMacro) continue; // ignorar definiciones
+			lanzarLinea(trimmed);
+		}
+
+		procesarTurnos();
+		mostrarEstado();
+	}
+
+	// lanzarRunas: ejecuta todas las líneas fuera de macros (similar a lanzarTurno)
+	function lanzarRunas() {
+		const input = document.getElementById("hechizo").value;
+		if(!input) return;
+		const lineas = input.split("\n");
+		procesarMacros(lineas);
+		log("Jugador recita hechizo en runas...", "info");
+
+		let dentroMacro = false;
+		for(const l of lineas){
+			const trimmed = l.trim();
+			if(!trimmed) continue;
+			if(trimmed.startsWith("Macro")) { dentroMacro = true; continue; }
+			if(trimmed.startsWith("EndMacro")) { dentroMacro = false; continue; }
+			if(dentroMacro) continue;
+			lanzarLinea(trimmed);
+		}
+
+		procesarTurnos();
+		mostrarEstado();
+	}
+
+	// init
+	actualizarTablero();
+	console.log("LOG: sistema iniciado. Jugadores:", jugadores);
+</script>
+
+
+</body>
+</html>
